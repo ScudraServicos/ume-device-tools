@@ -1,7 +1,8 @@
 # Publishes a GitHub release when a signed tag v* is pushed (only infrasec can
-# push tags), or on demand for an existing tag. The release gets the script and
-# its SHA-256 as files, so this link always serves the latest release:
+# push tags), or on demand for an existing tag. The release gets the scripts and
+# their SHA-256 as files, so these links always serve the latest release:
 #   https://github.com/ScudraServicos/ume-device-tools/releases/latest/download/device-tools.sh
+#   https://github.com/ScudraServicos/ume-device-tools/releases/latest/download/device-tools.ps1
 name: release
 
 on:
@@ -40,31 +41,51 @@ jobs:
           v="$(gh api "repos/$REPO/git/tags/${obj#* }" --jq .verification.verified)"
           [ "$v" = true ] || { echo "::error::$TAG signature is not verified by GitHub"; exit 1; }
 
-      - name: Get the tagged script (no third-party actions)
+      - name: Get the tagged scripts (no third-party actions)
         run: |
           set -euo pipefail
           git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$TAG" "https://github.com/$REPO.git" src
           ver="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' src/device-tools.sh)"
-          [ "v$ver" = "$TAG" ] || { echo "::error::script VERSION $ver does not match $TAG"; exit 1; }
+          [ "v$ver" = "$TAG" ] || { echo "::error::device-tools.sh VERSION $ver does not match $TAG"; exit 1; }
           bash -n src/device-tools.sh
-          cp src/device-tools.sh .
-          sha256sum device-tools.sh > device-tools.sh.sha256
-          cat device-tools.sh.sha256
+          ver="$(awk -F"'" '/^\$Version = /{ print $2; exit }' src/device-tools.ps1)"
+          [ "v$ver" = "$TAG" ] || { echo "::error::device-tools.ps1 Version $ver does not match $TAG"; exit 1; }
+          # Windows PowerShell 5.1 misreads non-ASCII text in files without a byte order mark.
+          if LC_ALL=C grep -n '[^[:print:][:space:]]' src/device-tools.ps1; then
+            echo "::error::device-tools.ps1 must be ASCII only"; exit 1
+          fi
+          pwsh -NoProfile -Command '$e = $null; $null = [System.Management.Automation.Language.Parser]::ParseFile("$PWD/src/device-tools.ps1", [ref]$null, [ref]$e); if ($e) { $e | Out-String | Write-Host; exit 1 }'
+          for f in device-tools.sh device-tools.ps1; do
+            cp "src/$f" .
+            sha256sum "$f" > "$f.sha256"
+            cat "$f.sha256"
+          done
 
       - name: Publish the release, marked as latest
         run: |
           set -euo pipefail
-          sum="$(cut -d' ' -f1 device-tools.sh.sha256)"
+          sum_sh="$(cut -d' ' -f1 device-tools.sh.sha256)"
+          sum_ps1="$(cut -d' ' -f1 device-tools.ps1.sha256)"
+          latest="https://github.com/$REPO/releases/latest/download"
           cat > notes.md <<EOF
-          Run the latest version (this command never changes):
+          Run the latest version (these commands never change).
+
+          macOS and Linux (Terminal):
 
           \`\`\`bash
-          f=\$(mktemp) && curl -fsSL https://github.com/$REPO/releases/latest/download/device-tools.sh -o "\$f" && sudo bash "\$f"
+          f=\$(mktemp) && curl -fsSL $latest/device-tools.sh -o "\$f" && sudo bash "\$f"
           \`\`\`
 
-          This exact version: https://github.com/$REPO/releases/download/$TAG/device-tools.sh
+          Windows (PowerShell; open it as administrator to check every user):
 
-          SHA-256 of \`device-tools.sh\`: \`$sum\` (also in \`device-tools.sh.sha256\`).
+          \`\`\`powershell
+          [Net.ServicePointManager]::SecurityProtocol='Tls12'; \$f="\$env:TEMP\device-tools.ps1"; iwr -UseBasicParsing $latest/device-tools.ps1 -OutFile \$f; if (\$?) { powershell -NoProfile -ExecutionPolicy Bypass -File \$f }
+          \`\`\`
+
+          This exact version:
+
+          - https://github.com/$REPO/releases/download/$TAG/device-tools.sh (SHA-256 \`$sum_sh\`, also in \`device-tools.sh.sha256\`)
+          - https://github.com/$REPO/releases/download/$TAG/device-tools.ps1 (SHA-256 \`$sum_ps1\`, also in \`device-tools.ps1.sha256\`)
           EOF
-          gh release create "$TAG" device-tools.sh device-tools.sh.sha256 \
+          gh release create "$TAG" device-tools.sh device-tools.sh.sha256 device-tools.ps1 device-tools.ps1.sha256 \
             --repo "$REPO" --verify-tag --latest --title "$TAG" --notes-file notes.md

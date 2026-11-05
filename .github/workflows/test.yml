@@ -1,0 +1,44 @@
+# Tests device-tools.ps1 on a disposable Windows runner (Windows PowerShell 5.1
+# and PowerShell 7, as administrator) and on Linux (PowerShell 7). On Windows the
+# test plants fake traces in the runner's profile and registers a scheduled
+# task, which is why it only runs here and never on a real computer.
+name: test
+
+on:
+  pull_request:
+    paths:
+      - "device-tools.ps1"
+      - "tests/windows-check.ps1"
+      - ".github/workflows/test.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  windows-check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    permissions: {} # public repository: the code is fetched without a token
+    steps:
+      - name: Get the code (no third-party actions)
+        shell: pwsh
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          git init --quiet src
+          git -C src fetch --quiet --depth 1 "https://github.com/$env:REPO.git" "$env:SHA"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git -C src -c advice.detachedHead=false checkout --quiet FETCH_HEAD
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Run tests/windows-check.ps1
+        shell: pwsh
+        run: |
+          if ($IsWindows) { $PSVersionTable.PSVersion.ToString(); powershell -NoProfile -Command '$PSVersionTable.PSVersion.ToString()' }
+          pwsh -NoProfile -File src/tests/windows-check.ps1
+          exit $LASTEXITCODE

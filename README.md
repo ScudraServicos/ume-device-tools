@@ -1,15 +1,18 @@
 # UME device tools
 
-One script, `device-tools.sh`, for macOS and Linux computers. It does two things:
+Two scripts with the same items and results: `device-tools.sh` for macOS and Linux, and
+`device-tools.ps1` for Windows. They do two things:
 
 | # | Item | Systems | What it does |
 |---|---|---|---|
-| 1 | **Claude Code extension check** | macOS, Linux | Looks for the traces left by the backdoored Claude Code extension (versions 2.1.312 and 2.1.313 from the Cursor extension marketplace). **Read-only:** it reports, it changes nothing. |
+| 1 | **Claude Code extension check** | macOS, Linux, Windows | Looks for the traces left by the backdoored Claude Code extension (versions 2.1.312 and 2.1.313 from the Cursor extension marketplace). **Read-only:** it reports, it changes nothing. |
 | 2 | **Ubuntu network protection for [CVE-2026-98432](https://ubuntu.com/security/CVE-2026-98432)** | Ubuntu | Applies Ubuntu's published mitigation for a critical Linux kernel flaw (remote code execution). |
 
 ## Run it
 
-Needs `sudo` (your computer password). This command always runs the latest release:
+These commands always run the latest release.
+
+**macOS and Linux** (Terminal). Needs `sudo` (your computer password):
 
 ```bash
 f=$(mktemp) && curl -fsSL https://github.com/ScudraServicos/ume-device-tools/releases/latest/download/device-tools.sh -o "$f" && sudo bash "$f"
@@ -24,8 +27,20 @@ f=$(mktemp) && curl -fsSL https://github.com/ScudraServicos/ume-device-tools/rel
 
 Without `sudo` (macOS and non-Ubuntu Linux only), the check covers the current user only.
 
-To run one exact version, use `releases/download/<tag>/device-tools.sh` instead of
-`releases/latest/download/device-tools.sh` (tags are listed under Releases).
+**Windows** (PowerShell). Open the Start menu, type `PowerShell`, choose **Run as
+administrator**, then paste:
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol='Tls12'; $f="$env:TEMP\device-tools.ps1"; iwr -UseBasicParsing https://github.com/ScudraServicos/ume-device-tools/releases/latest/download/device-tools.ps1 -OutFile $f; if ($?) { powershell -NoProfile -ExecutionPolicy Bypass -File $f }
+```
+
+It only checks; nothing is changed on Windows. Without administrator rights it checks the current
+user only. `-ExecutionPolicy Bypass` applies to that one run, not to the computer's settings. The
+first part turns on TLS 1.2 for that window, which older Windows PowerShell needs to download
+from GitHub.
+
+To run one exact version, use `releases/download/<tag>/device-tools.sh` (or `.ps1`) instead of
+`releases/latest/download/...` (tags are listed under Releases).
 
 ## Reading the result
 
@@ -38,7 +53,7 @@ The two items run in separate sections, each ending with its own `Result:` line,
 | | `ATTENTION` | **Do not delete anything. Contact the Security team now.** |
 | 2. Ubuntu network protection | `ACTIVE` | Nothing. When Ubuntu releases the fix: update, restart, run again with `--remove`. |
 | | `NOT ACTIVE` (`--status`) | Run the command without `--status` to turn it on. |
-| | `NOT NEEDED` | Nothing. The computer does not run Ubuntu. |
+| | `NOT NEEDED` | Nothing. The computer does not run Ubuntu (always the case on Windows). |
 | | `REMOVED` (`--remove`) | Nothing, if the official fix is installed. |
 
 | Exit code | Meaning |
@@ -58,23 +73,27 @@ by the Cursor extension marketplace. When the editor loads them, they add an att
 a startup item, open a reverse SSH tunnel and send host details to the attacker. **Updating or
 removing the extension does not remove these traces.**
 
-The check runs for every local account when run with `sudo`. It reports:
+The check runs for every local account when run with `sudo` (macOS, Linux) or as administrator
+(Windows). It reports:
 
-| Trace | Where |
-|---|---|
-| Backdoored extension file (contains `134.209.82.225`) | `~/.<editor>/extensions/anthropic.claude-code-*/extension.js` |
-| Attacker SSH key (`svc-telemetry`, `SHA256:0Z6R+DF64Do2nwQic8a7kkfDLNNk4IiK+2U2Rci4htk`) | `~/.ssh/authorized_keys` |
-| Startup script and tunnel key | `~/.config/.smt`, `~/.config/.smtk` |
-| Fake Apple startup item (macOS) | `~/Library/LaunchAgents/com.apple.sysmond.plist` |
-| `@reboot` entry (Linux) | user crontab |
-| Tunnel key in the temporary folder | `/tmp/.stk_*`, `$TMPDIR/.stk_*` |
-| Running tunnel or retry loop | processes mentioning `134.209.82.225`, `.config/.smt` or `.stk_` |
-| Open connection to the attacker server | `134.209.82.225` |
+| Trace | macOS and Linux | Windows |
+|---|---|---|
+| Backdoored extension file (contains `134.209.82.225`) | `~/.<editor>/extensions/anthropic.claude-code-*/extension.js` | `%USERPROFILE%\.<editor>\extensions\anthropic.claude-code-*\extension.js` |
+| Attacker SSH key (`svc-telemetry`, `SHA256:0Z6R+DF64Do2nwQic8a7kkfDLNNk4IiK+2U2Rci4htk`) | `~/.ssh/authorized_keys` | `%USERPROFILE%\.ssh\authorized_keys`, `%ProgramData%\ssh\administrators_authorized_keys` |
+| Startup script and tunnel key | `~/.config/.smt`, `~/.config/.smtk` | `%USERPROFILE%\.config\smt.cmd`, `%USERPROFILE%\.config\smtk` |
+| Startup item | `~/Library/LaunchAgents/com.apple.sysmond.plist` (macOS), `@reboot` crontab entry (Linux) | scheduled task `SysMon` (or any task running `smt.cmd`), `sysmon.cmd` in the Startup folder |
+| Tunnel key in the temporary folder | `/tmp/.stk_*`, `$TMPDIR/.stk_*` | `%TEMP%\.stk_*` |
+| Running tunnel or retry loop | `ssh`/`autossh` to `134.209.82.225` or with `.stk_`/`.smtk`; shell running `.config/.smt` | `ssh.exe` to `134.209.82.225` or with `.stk_`/`smtk`; `cmd.exe` running `smt.cmd` or `sysmon.cmd` |
+| Open connection to the attacker server | `134.209.82.225` | `134.209.82.225` |
 
 Having version 2.1.312 or 2.1.313 installed is only noted, not counted: the backdoored builds came
 from the Cursor marketplace, and Cursor reports no other distribution as affected, so the file
-content decides. Windows is not covered by this script
-(see the Cursor notice for its check).
+content decides.
+
+On Windows the backdoor also tries to install and start OpenSSH Server, so the script notes when
+the `sshd` service exists (not counted: many people install it on purpose). It also notes when
+WSL is installed: with Cursor or VS Code connected to WSL, the extension can run inside WSL as
+Linux, so run the macOS/Linux command inside WSL too.
 
 **If anything is found, do not delete it.** The Security team handles removal and credential
 rotation, and needs the traces to check whether anyone logged in through the tunnel.
@@ -117,7 +136,8 @@ Disabling MPTCP is **not** a mitigation.
 
 ## Check before you run
 
-Each release has the script and its SHA-256 (`device-tools.sh.sha256`) as files:
+Each release has the scripts and their SHA-256 (`device-tools.sh.sha256`,
+`device-tools.ps1.sha256`) as files. macOS and Linux:
 
 ```bash
 curl -fsSLO https://github.com/ScudraServicos/ume-device-tools/releases/latest/download/device-tools.sh
@@ -127,13 +147,26 @@ less device-tools.sh                      # read it
 sudo bash device-tools.sh
 ```
 
+Windows (PowerShell):
+
+```powershell
+$u = 'https://github.com/ScudraServicos/ume-device-tools/releases/latest/download/device-tools.ps1'
+$f = "$env:TEMP\device-tools.ps1"
+iwr -UseBasicParsing $u -OutFile $f
+iwr -UseBasicParsing "$u.sha256" -OutFile "$f.sha256"
+(Get-FileHash $f -Algorithm SHA256).Hash -eq (Get-Content "$f.sha256").Split(' ')[0]   # must print True
+notepad $f                                                                              # read it
+powershell -NoProfile -ExecutionPolicy Bypass -File $f
+```
+
 ## Releases
 
 Pushing a signed tag `vYYYY.MM.DD[.N]` (only the infrasec team can push tags) runs
 `.github/workflows/release.yml`. It publishes only if GitHub verifies the tag signature and the
-script's `VERSION` matches the tag, then attaches `device-tools.sh` and its SHA-256 and marks
-the release as latest. Releases are immutable once published. To publish an existing tag again,
-run the workflow manually with that tag.
+`VERSION` of both scripts matches the tag (`device-tools.ps1` must also parse and be ASCII only),
+then attaches both scripts and their SHA-256 and marks the release as latest. Releases are
+immutable once published. To publish an existing tag again, run the workflow manually with that
+tag.
 
 ## Tests
 
@@ -144,6 +177,11 @@ run the workflow manually with that tag.
   share the Docker host's kernel, so these tests cover each release's userspace, not its kernel.
 - `tests/macos-check.sh` runs the extension check with the bash 3.2 that ships with macOS, against
   fake home and temp folders.
+- `tests/windows-check.ps1` tests `device-tools.ps1`. `.github/workflows/test.yml` runs it on every
+  pull request that changes it: on a disposable Windows runner as administrator, with Windows
+  PowerShell 5.1 and PowerShell 7 (planted files, a `SysMon` scheduled task, the startup script
+  running, a decoy process), and on Linux with PowerShell 7 against fake profile folders. On a
+  real Windows computer it refuses to run, because it plants traces in the profile.
 
 ## References
 

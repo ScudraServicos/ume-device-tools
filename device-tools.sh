@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # device-tools.sh - UME device check for macOS and Linux (Ubuntu).
+# On Windows, use device-tools.ps1 (the Windows version, same results).
 #
 # It does two separate things, each with its own result:
 #
@@ -35,7 +36,7 @@
 
 set -euo pipefail
 
-VERSION="2026.11.05.1"
+VERSION="2026.11.05.2"
 
 # --- Item 1: Claude Code extension check -----------------------------------
 EXT_NOTICE="https://cursor.com/blog/claude-code-extension-security-notice"
