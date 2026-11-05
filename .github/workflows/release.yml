@@ -1,0 +1,70 @@
+# Publishes a GitHub release when a signed tag v* is pushed (only infrasec can
+# push tags), or on demand for an existing tag. The release gets the script and
+# its SHA-256 as files, so this link always serves the latest release:
+#   https://github.com/ScudraServicos/ume-device-tools/releases/latest/download/device-tools.sh
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing signed tag to publish, e.g. v2026.11.05.1"
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the release and upload its files; nothing else
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Only signed tags verified by GitHub
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$ ]] || { echo "::error::bad tag name: $TAG"; exit 1; }
+          obj="$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq '.object.type + " " + .object.sha')"
+          [ "${obj%% *}" = tag ] || { echo "::error::$TAG is not an annotated tag"; exit 1; }
+          v="$(gh api "repos/$REPO/git/tags/${obj#* }" --jq .verification.verified)"
+          [ "$v" = true ] || { echo "::error::$TAG signature is not verified by GitHub"; exit 1; }
+
+      - name: Get the tagged script (no third-party actions)
+        run: |
+          set -euo pipefail
+          git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$TAG" "https://github.com/$REPO.git" src
+          ver="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' src/device-tools.sh)"
+          [ "v$ver" = "$TAG" ] || { echo "::error::script VERSION $ver does not match $TAG"; exit 1; }
+          bash -n src/device-tools.sh
+          cp src/device-tools.sh .
+          sha256sum device-tools.sh > device-tools.sh.sha256
+          cat device-tools.sh.sha256
+
+      - name: Publish the release, marked as latest
+        run: |
+          set -euo pipefail
+          sum="$(cut -d' ' -f1 device-tools.sh.sha256)"
+          cat > notes.md <<EOF
+          Run the latest version (this command never changes):
+
+          \`\`\`bash
+          f=\$(mktemp) && curl -fsSL https://github.com/$REPO/releases/latest/download/device-tools.sh -o "\$f" && sudo bash "\$f"
+          \`\`\`
+
+          This exact version: https://github.com/$REPO/releases/download/$TAG/device-tools.sh
+
+          SHA-256 of \`device-tools.sh\`: \`$sum\` (also in \`device-tools.sh.sha256\`).
+          EOF
+          gh release create "$TAG" device-tools.sh device-tools.sh.sha256 \
+            --repo "$REPO" --verify-tag --latest --title "$TAG" --notes-file notes.md

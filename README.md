@@ -9,20 +9,23 @@ One script, `device-tools.sh`, for macOS and Linux computers. It does two things
 
 ## Run it
 
-Needs `sudo` (your computer password).
+Needs `sudo` (your computer password). This command always runs the latest release:
 
 ```bash
-f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/ScudraServicos/ume-device-tools/v2026.11.05.1/device-tools.sh -o "$f" && sudo bash "$f"
+f=$(mktemp) && curl -fsSL https://github.com/ScudraServicos/ume-device-tools/releases/latest/download/device-tools.sh -o "$f" && sudo bash "$f"
 ```
 
 Add `--status` (check only, changes nothing) or `--remove` (undo the Ubuntu protection) at
 the end of the same command:
 
 ```bash
-f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/ScudraServicos/ume-device-tools/v2026.11.05.1/device-tools.sh -o "$f" && sudo bash "$f" --status
+f=$(mktemp) && curl -fsSL https://github.com/ScudraServicos/ume-device-tools/releases/latest/download/device-tools.sh -o "$f" && sudo bash "$f" --status
 ```
 
 Without `sudo` (macOS and non-Ubuntu Linux only), the check covers the current user only.
+
+To run one exact version, use `releases/download/<tag>/device-tools.sh` instead of
+`releases/latest/download/device-tools.sh` (tags are listed under Releases).
 
 ## Reading the result
 
@@ -114,12 +117,23 @@ Disabling MPTCP is **not** a mitigation.
 
 ## Check before you run
 
+Each release has the script and its SHA-256 (`device-tools.sh.sha256`) as files:
+
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/ScudraServicos/ume-device-tools/v2026.11.05.1/device-tools.sh
-shasum -a 256 device-tools.sh   # compare with the release notes (sha256sum on Linux)
-less device-tools.sh            # read it
+curl -fsSLO https://github.com/ScudraServicos/ume-device-tools/releases/latest/download/device-tools.sh
+curl -fsSLO https://github.com/ScudraServicos/ume-device-tools/releases/latest/download/device-tools.sh.sha256
+shasum -a 256 -c device-tools.sh.sha256   # sha256sum -c on Linux
+less device-tools.sh                      # read it
 sudo bash device-tools.sh
 ```
+
+## Releases
+
+Pushing a signed tag `vYYYY.MM.DD[.N]` (only the infrasec team can push tags) runs
+`.github/workflows/release.yml`. It publishes only if GitHub verifies the tag signature and the
+script's `VERSION` matches the tag, then attaches `device-tools.sh` and its SHA-256 and marks
+the release as latest. Releases are immutable once published. To publish an existing tag again,
+run the workflow manually with that tag.
 
 ## Tests
 
