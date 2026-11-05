@@ -161,27 +161,31 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $f
 
 ## Releases
 
-Pushing a signed tag `vYYYY.MM.DD[.N]` (only the infrasec team can push tags) runs
-`.github/workflows/release.yml`. It publishes only if GitHub verifies the tag signature and the
-`VERSION` of both scripts matches the tag (`device-tools.ps1` must also parse and be ASCII only),
-then attaches both scripts and their SHA-256 and marks the release as latest. Releases are
-immutable once published. To publish an existing tag again, run the workflow manually with that
-tag.
+Releases publish themselves when an approved pull request is merged into `main`. The pull request
+must pass every test (`test.yml`) and get an approval from the infrasec team. After the merge,
+`release.yml` runs the tests again and, if the scripts carry a new `VERSION`, creates the tag
+`v<VERSION>`, attaches both scripts and their SHA-256, and marks the release as latest. Nobody
+creates tags by hand. Releases are immutable once published.
+
+**Steps for maintainers and reviewers (changing a script, raising the version, approving, retrying):
+[RELEASING.md](RELEASING.md).**
 
 ## Tests
+
+`.github/workflows/test.yml` runs all of them on every pull request and again before each release:
 
 - `tests/ubuntu-e2e.sh [image]` runs the script in Docker: real TCP connections with and without IP
   options, re-runs, `--status`, `--remove`, non-root refused on Ubuntu, reboots under systemd, the
   extension check against planted traces (and that it leaves them untouched), and a non-Ubuntu
-  system (check only). Passing on `ubuntu:18.04`, `20.04`, `22.04`, `24.04` and `26.04`. Containers
+  system (check only). Runs on `ubuntu:18.04`, `20.04`, `22.04`, `24.04` and `26.04`. Containers
   share the Docker host's kernel, so these tests cover each release's userspace, not its kernel.
 - `tests/macos-check.sh` runs the extension check with the bash 3.2 that ships with macOS, against
   fake home and temp folders.
-- `tests/windows-check.ps1` tests `device-tools.ps1`. `.github/workflows/test.yml` runs it on every
-  pull request that changes it: on a disposable Windows runner as administrator, with Windows
-  PowerShell 5.1 and PowerShell 7 (planted files, a `SysMon` scheduled task, the startup script
-  running, a decoy process), and on Linux with PowerShell 7 against fake profile folders. On a
-  real Windows computer it refuses to run, because it plants traces in the profile.
+- `tests/windows-check.ps1` tests `device-tools.ps1`. It runs on a disposable Windows runner as
+  administrator, with Windows PowerShell 5.1 and PowerShell 7: planted files, a `SysMon`
+  scheduled task, the startup script running, and a decoy process. It also runs on Linux with
+  PowerShell 7 against fake profile folders. It refuses to run on a real Windows computer,
+  because it plants traces in the profile.
 
 ## References
 
