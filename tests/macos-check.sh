@@ -17,8 +17,8 @@ echo "=== macOS: clean home"
 mkdir -p "$T/clean" "$T/clean-tmp"
 rc=0; OUT="$(HOME="$T/clean" TMPDIR="$T/clean-tmp/" /bin/bash "$S" --status 2>&1)" || rc=$?
 [ "$rc" = 0 ] && ok "exit 0" || { echo "$OUT"; fail "rc=$rc"; }
-grep -q 'no traces of the backdoored version' <<<"$OUT" && ok "no traces reported" || fail "clean output"
-grep -q 'not needed on this system' <<<"$OUT" && ok "Ubuntu protection skipped" || fail "ubuntu skip"
+grep -q 'Result: OK - no traces' <<<"$OUT" && ok "item 1 result OK" || fail "clean output"
+grep -q 'Result: NOT NEEDED' <<<"$OUT" && ok "item 2 result NOT NEEDED" || fail "ubuntu skip"
 
 echo "=== macOS: published traces planted"
 H="$T/home"
@@ -32,7 +32,8 @@ echo 'var h="134.209.82.225";' >"$H/.cursor/extensions/anthropic.claude-code-2.1
 echo 'key' >"$T/tmp/.stk_0123456789"
 rc=0; OUT="$(HOME="$H" TMPDIR="$T/tmp/" /bin/bash "$S" --status 2>&1)" || rc=$?
 [ "$rc" = 3 ] && ok "exit 3" || { echo "$OUT"; fail "rc=$rc"; }
-grep -q '6 trace(s)' <<<"$OUT" && ok "all 6 traces reported (key, .smt, .smtk, LaunchAgent, extension.js, .stk_)" || { echo "$OUT"; fail "trace count"; }
+grep -q 'Result: ATTENTION - 6 trace(s)' <<<"$OUT" && ok "item 1 result ATTENTION, 6 traces (key, .smt, .smtk, LaunchAgent, extension.js, .stk_)" || { echo "$OUT"; fail "trace count"; }
+grep -q 'ACTION NEEDED (item 1)' <<<"$OUT" && grep -q '2. Ubuntu network protection: *NOT NEEDED' <<<"$OUT" && ok "summary keeps the two items apart" || { echo "$OUT"; fail "summary"; }
 [ -f "$H/Library/LaunchAgents/com.apple.sysmond.plist" ] && [ -f "$T/tmp/.stk_0123456789" ] && ok "read-only: traces left untouched" || fail "changed files"
 rc=0; HOME="$H" TMPDIR="$T/tmp/" /bin/bash "$S" --remove >/dev/null 2>&1 || rc=$?
 [ "$rc" = 0 ] && ok "--remove on macOS: nothing to do, exit 0" || fail "--remove rc=$rc"

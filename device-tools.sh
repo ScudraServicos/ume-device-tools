@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # device-tools.sh - UME device check for macOS and Linux (Ubuntu).
 #
-# It does two things:
+# It does two separate things, each with its own result:
 #
 #   1. Claude Code extension check (macOS and Linux). READ-ONLY.
 #      Versions 2.1.312 and 2.1.313 of the Claude Code extension published on
@@ -10,6 +10,7 @@
 #      the extension does not remove what it planted. This step only looks for
 #      those traces and reports them. It changes nothing.
 #        Notice: https://cursor.com/blog/claude-code-extension-security-notice
+#      Result: OK (no traces) or ATTENTION (traces found: contact Security).
 #
 #   2. Ubuntu network protection for CVE-2026-98432 (Ubuntu only).
 #      CVE-2026-98432 is a use-after-free in the Linux kernel's IPv4 TCP
@@ -19,11 +20,12 @@
 #      options. Existing firewall rules are not touched. TCP connections that
 #      depend on IPv4 options stop working; TCP options and IPv6 are not affected.
 #        Advisory: https://ubuntu.com/security/CVE-2026-98432
+#      Result: ACTIVE, NOT ACTIVE, NOT NEEDED (not Ubuntu) or REMOVED.
 #
 # Usage:
-#   sudo bash device-tools.sh            check, then apply the Ubuntu protection (default)
+#   sudo bash device-tools.sh            check, then turn on the Ubuntu protection (default)
 #   sudo bash device-tools.sh --status   check and show status, change nothing
-#   sudo bash device-tools.sh --remove   remove the Ubuntu protection
+#   sudo bash device-tools.sh --remove   turn off the Ubuntu protection
 # Without sudo (macOS and non-Ubuntu Linux): checks the current user only.
 #
 # Exit codes: 0 ok | 1 error, or (--status) Ubuntu protection not active |
@@ -33,7 +35,7 @@
 
 set -euo pipefail
 
-VERSION="2026.11.05"
+VERSION="2026.11.05.1"
 
 # --- Item 1: Claude Code extension check -----------------------------------
 EXT_NOTICE="https://cursor.com/blog/claude-code-extension-security-notice"
@@ -57,25 +59,46 @@ OS_KIND=""
 OS_NAME=""
 WORKDIR=""
 FOUND=0
-REPORTED="
-"
+REPORTED=$'\n'
+BUF=""
+NOTES=""
+RESULT1=""
+RESULT2=""
+SUMMARY=0
+KEPT_AFTER_RESTART=1
+
+# Colors only on an interactive terminal.
+if [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ]; then
+  C_OK=$'\033[1;32m' C_BAD=$'\033[1;31m' C_WARN=$'\033[1;33m' C_B=$'\033[1m' C_0=$'\033[0m'
+else
+  C_OK="" C_BAD="" C_WARN="" C_B="" C_0=""
+fi
+LINE="------------------------------------------------------------------------"
 
 # shellcheck disable=SC2329  # invoked by the EXIT trap
 cleanup() { if [ -n "$WORKDIR" ]; then rm -rf "$WORKDIR"; fi; }
 trap cleanup EXIT
 
-say() { printf '[+] %s\n' "$*"; }
-note() { printf '[-] %s\n' "$*"; }
-warn() { printf '[!] %s\n' "$*" >&2; }
-found_reminder() {
+info() { printf '%s\n' "$*"; }
+step() { printf '  %s\n' "$*"; }
+warn() { printf '  %s! %s%s\n' "$C_WARN" "$*" "$C_0"; }
+section() { printf '\n%s\n %s%s%s\n%s\n' "$LINE" "$C_B" "$*" "$C_0" "$LINE"; }
+result() { printf '\n  %sResult: %s%s\n' "$1" "$2" "$C_0"; }
+
+print_summary() {
+  if [ "$SUMMARY" -ne 1 ]; then return 0; fi
+  printf '\n%s\n %sSUMMARY%s\n' "$LINE" "$C_B" "$C_0"
+  printf '   1. Claude Code extension check:  %s\n' "${RESULT1:-not run}"
+  printf '   2. Ubuntu network protection:    %s\n' "${RESULT2:-not run}"
   if [ "$FOUND" -gt 0 ]; then
-    printf '[!] %s\n' "Reminder: ${FOUND} trace(s) of the backdoored Claude Code extension were found (see above)." \
-      "Do not delete anything. Contact the Security team right away." >&2
+    printf '\n   %sACTION NEEDED (item 1): do not delete anything and contact the Security team now.%s\n' "$C_BAD" "$C_0"
   fi
+  printf '%s\n' "$LINE"
 }
+
 die() {
-  printf '[x] %s\n' "$*" >&2
-  found_reminder
+  printf '\n  %sError: %s%s\n' "$C_BAD" "$*" "$C_0" >&2
+  print_summary
   if [ "$FOUND" -gt 0 ]; then exit 3; fi
   exit 1
 }
@@ -84,16 +107,21 @@ usage() {
   cat <<EOF
 device-tools.sh ${VERSION} - UME device check for macOS and Linux
 
+It does two separate things:
+  1. Claude Code extension check: looks for traces of a backdoored extension.
+     Only looks, changes nothing. Result: OK or ATTENTION.
+  2. Ubuntu network protection for ${CVE} (Ubuntu only).
+     Result: ACTIVE, NOT ACTIVE, NOT NEEDED or REMOVED.
+
 Usage: sudo bash device-tools.sh [--apply | --status | --remove]
-  --apply    check for the backdoored Claude Code extension, then apply the
-             Ubuntu network protection for ${CVE} (default)
-  --status   check and show status, change nothing
-  --remove   remove the Ubuntu network protection
+  --apply    run item 1, then turn on item 2 (default)
+  --status   run item 1 and show the state of item 2, change nothing
+  --remove   turn off item 2 (after the official Ubuntu fix is installed)
   --help     show this help
   --version  show the script version
 
-Exit codes: 0 ok, 1 error or protection not active (--status), 2 usage,
-            3 traces of the backdoored extension found.
+Exit codes: 0 ok, 1 error or item 2 not active (--status), 2 usage,
+            3 item 1 found traces.
 
 Claude Code extension notice: ${EXT_NOTICE}
 Ubuntu advisory:              ${ADVISORY}
@@ -132,7 +160,7 @@ detect_os() {
 # Item 1: Claude Code extension check (read-only)
 # ============================================================================
 
-# Report each trace once, even if two paths point to the same file.
+# Record a trace once, even if two paths point to the same file.
 found() {
   case "$REPORTED" in *"
 $1
@@ -140,7 +168,30 @@ $1
   REPORTED="${REPORTED}$1
 "
   FOUND=$((FOUND + 1))
-  printf '[!] FOUND: %s\n' "$1"
+  BUF="${BUF}      ${C_BAD}!${C_0} $1
+"
+}
+
+# Print one line per place checked, then the traces found there.
+report() {
+  local n=$((FOUND - $2))
+  if [ "$n" -eq 0 ]; then
+    step "- ${1}: ${C_OK}nothing found${C_0}"
+  else
+    step "- ${1}: ${C_BAD}${n} trace(s) found${C_0}"
+  fi
+  printf '%s%s' "$BUF" "$NOTES"
+  BUF=""
+  NOTES=""
+}
+
+# PIDs of this script and its parents (the shell, sudo, ...).
+own_pids() {
+  local p="$$"
+  while [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null; do
+    printf '%s ' "$p"
+    p="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')"
+  done
 }
 
 # Physical path of an existing file (resolves /tmp -> /private/tmp on macOS).
@@ -162,21 +213,24 @@ list_homes() {
 }
 
 check_home() {
-  local user="$1" home="$2" d f tab=""
+  local user="$1" home="$2" before="$FOUND" d f v hit tab=""
 
   # Installed extension folders, in any editor (~/.cursor, ~/.vscode, ...).
   for d in "$home"/.*/extensions/anthropic.claude-code-*; do
     if [ ! -d "$d" ]; then continue; fi
-    case "${d##*/}" in
-      anthropic.claude-code-2.1.312* | anthropic.claude-code-2.1.313*)
-        note "Affected version number installed: $d (the file check decides if it is the backdoored build)."
-        ;;
-    esac
+    hit=0
     for f in "$d/extension.js" "$d/dist/extension.js"; do
       if [ -f "$f" ] && grep -qsF "$IOC_IP" "$f"; then
         found "backdoored extension file: $f"
+        hit=1
       fi
     done
+    v="${d##*/anthropic.claude-code-}"
+    v="${v%%-*}"
+    if [ "$hit" -eq 0 ] && { [ "$v" = "2.1.312" ] || [ "$v" = "2.1.313" ]; }; then
+      NOTES="${NOTES}      i extension version ${v} is installed, but its files are clean: ${d}
+"
+    fi
   done
 
   # Attacker SSH key (matched by key and by comment).
@@ -186,14 +240,14 @@ check_home() {
     fi
   done
 
-  # Startup script, tunnel key and (macOS) fake Apple LaunchAgent.
+  # Startup script, tunnel key and (macOS) fake Apple startup item.
   for f in "$home/.config/.smt" "$home/.config/.smtk" "$home/$IOC_LAUNCH_AGENT"; do
     if [ -e "$f" ]; then
       found "backdoor file: $f"
     fi
   done
 
-  # Linux persistence: @reboot entry in the user's crontab.
+  # Linux startup entry in the user's crontab.
   if command -v crontab >/dev/null 2>&1; then
     if is_root; then
       tab="$(crontab -u "$user" -l 2>/dev/null || true)"
@@ -204,10 +258,12 @@ check_home() {
       *".config/.smt"*) found "backdoor startup entry in the crontab of user ${user}" ;;
     esac
   fi
+
+  report "user ${user}" "$before"
 }
 
 check_system() {
-  local f out hits line
+  local before="$FOUND" f out hits line
   # Tunnel key in the temporary folder (/tmp/.stk_<hex>, $TMPDIR/.stk_<hex> on macOS).
   for f in /tmp/.stk_* /var/tmp/.stk_* /private/var/folders/*/*/T/.stk_* "${TMPDIR:-/tmp}"/.stk_*; do
     if [ -e "$f" ]; then
@@ -215,12 +271,26 @@ check_system() {
     fi
   done
 
-  # Running tunnel or retry loop.
-  out="$(ps axww -o user=,pid=,command= 2>/dev/null || true)"
-  hits="$(printf '%s\n' "$out" | grep -F -e "$IOC_IP" -e ".config/.smt" -e "/.stk_" || true)"
+  # Running tunnel (ssh/autossh to the attacker server or with its key) or the
+  # shell running the startup script / retry loop. This script's own process
+  # and its parents are skipped, so the shell that started it never matches.
+  out="$(ps axww -o pid=,user=,command= 2>/dev/null || true)"
+  hits="$(printf '%s\n' "$out" | awk -v ip="$IOC_IP" -v skip=" $(own_pids) " '
+    {
+      if (index(skip, " " $1 " ")) next
+      cmd = $0
+      sub(/^[ \t]*[0-9]+[ \t]+[^ \t]+[ \t]+/, "", cmd)
+      split(cmd, w, " ")
+      prog = w[1]
+      sub(/.*\//, "", prog)
+      if ((prog == "ssh" || prog == "autossh") &&
+          (index(cmd, ip) || index(cmd, "/.stk_") || index(cmd, ".config/.smtk"))) { print; next }
+      if ((prog == "sh" || prog == "bash" || prog == "dash" || prog == "zsh") &&
+          (index(cmd, ".config/.smt") || index(cmd, "tunnel@" ip))) { print; next }
+    }' || true)"
   if [ -n "$hits" ]; then
     while IFS= read -r line; do
-      found "backdoor process running: $(printf '%s' "$line" | tr -s ' ' | cut -c1-160)"
+      found "backdoor program running: $(printf '%s' "$line" | tr -s ' ' | cut -c1-150)"
     done <<EOF
 $hits
 EOF
@@ -234,15 +304,23 @@ EOF
     out="$(netstat -an 2>/dev/null || true)"
   fi
   case "$out" in
-    *"$IOC_IP"*) found "open network connection to the attacker server ${IOC_IP}" ;;
+    *"$IOC_IP"*) found "open connection to the attacker server ${IOC_IP}" ;;
   esac
+
+  report "temporary files, running programs and network connections" "$before"
 }
 
 ext_check() {
   local user home
-  say "1/2 Claude Code extension check (read-only)"
-  if ! is_root; then
-    note "Not running as root: checking user $(id -un) only."
+  section "1/2  Claude Code extension check"
+  step "What it does: looks for the traces left by a backdoored version of the"
+  step "Claude Code extension (2.1.312 and 2.1.313, from the Cursor extension store)."
+  step "It only looks. Nothing is changed or deleted."
+  info ""
+  if is_root; then
+    step "Checking every user of this computer:"
+  else
+    step "Checking only your own user (run with sudo to check every user):"
   fi
   while IFS=$'\t' read -r user home; do
     if [ -z "$home" ] || [ "$home" = "/" ] || [ ! -d "$home" ]; then continue; fi
@@ -251,11 +329,14 @@ ext_check() {
 $(list_homes)
 EOF
   check_system
+
   if [ "$FOUND" -eq 0 ]; then
-    say "Claude Code extension: no traces of the backdoored version were found."
+    RESULT1="${C_OK}OK${C_0} - no traces found"
+    result "$C_OK" "OK - no traces of the backdoored extension were found."
   else
-    warn "Claude Code extension: ${FOUND} trace(s) of the backdoored version were found."
-    warn "Do not delete anything. Contact the Security team right away."
+    RESULT1="${C_BAD}ATTENTION${C_0} - ${FOUND} trace(s) found, contact the Security team"
+    result "$C_BAD" "ATTENTION - ${FOUND} trace(s) of the backdoored extension were found."
+    step "${C_BAD}Do not delete anything and contact the Security team now.${C_0}"
   fi
 }
 
@@ -272,35 +353,39 @@ in_container() {
   [ -f /.dockerenv ] || [ -f /run/.containerenv ]
 }
 
-# Informational only: Ubuntu kernel changelogs list the CVEs each build fixes.
+# Ubuntu kernel changelogs list the CVEs each build fixes. Returns 0 if fixed.
+KERNEL_FIXED=1
 kernel_status() {
   local krel f checked=0
   krel="$(uname -r)"
+  KERNEL_FIXED=1
   for f in "/usr/share/doc/linux-modules-${krel}/changelog.Debian.gz" \
     "/usr/share/doc/linux-image-unsigned-${krel}/changelog.Debian.gz" \
     "/usr/share/doc/linux-image-${krel}/changelog.Debian.gz"; do
     [ -r "$f" ] || continue
     checked=1
     if zgrep -qF "$CVE" "$f"; then
-      say "Running kernel ${krel}: its changelog lists ${CVE} (fix likely included)."
+      KERNEL_FIXED=0
+      step "The running system core (kernel ${krel}) already includes the official fix."
       return 0
     fi
   done
   if [ "$checked" -eq 1 ]; then
-    warn "Running kernel ${krel}: its changelog does not list ${CVE}. Treat it as vulnerable."
+    step "The running system core (kernel ${krel}) does not include the official fix yet."
   else
-    warn "Running kernel ${krel}: changelog not found. Compare the version with ${ADVISORY}"
+    step "Could not tell whether the running system core (kernel ${krel}) has the fix."
+    step "Compare its version with ${ADVISORY}"
   fi
 }
 
 ensure_nft() {
   if ! command -v nft >/dev/null 2>&1; then
-    say "Installing nftables (required by the protection)..."
+    step "Installing the firewall tool it needs (nftables)..."
     export DEBIAN_FRONTEND=noninteractive
     apt-get -o DPkg::Lock::Timeout=120 update -qq ||
       warn "apt-get update reported errors; trying to install anyway."
     apt-get -o DPkg::Lock::Timeout=120 install -y -qq --no-install-recommends nftables >/dev/null ||
-      die "Could not install nftables. Install it ('apt-get install nftables') and run again."
+      die "Could not install nftables. Install it ('sudo apt-get install nftables') and run again."
   fi
   NFT="$(command -v nft)" || die "nft not found after installing nftables."
 }
@@ -340,14 +425,15 @@ table inet ${TABLE} {
 }
 EOF
   "$NFT" -c -f "$WORKDIR/rule.nft" ||
-    die "nft rejected the rule (kernel without nf_tables support?). Nothing was changed."
+    die "The firewall rejected the rule (kernel without nf_tables support?). Nothing was changed."
   install -m 0644 -o root -g root "$WORKDIR/rule.nft" "$RULE_FILE"
 }
 
 persist() {
   local out
   if ! has_systemd; then
-    warn "systemd is not running: the rule is active now but will NOT survive a reboot."
+    KEPT_AFTER_RESTART=0
+    warn "systemd is not running: the protection is on now but will NOT stay on after a restart."
     return 0
   fi
   cat >"$WORKDIR/unit" <<EOF
@@ -372,9 +458,8 @@ EOF
   systemctl daemon-reload
   if ! out="$(systemctl enable --now "$UNIT" 2>&1)"; then
     printf '%s\n' "$out" >&2
-    die "Could not enable ${UNIT}. The rule is active now but will not survive a reboot."
+    die "Could not enable ${UNIT}. The protection is on now but will not stay on after a restart."
   fi
-  say "Kept after reboot by ${UNIT}."
 
   # Advisory method, used only where nftables.service already owns the firewall:
   # its reload/restart flushes the whole ruleset, so the rule must be in its config.
@@ -382,53 +467,68 @@ EOF
     if [ -n "$(tail -c1 "$NFT_CONF")" ]; then printf '\n' >>"$NFT_CONF"; fi
     printf '%s\n' "$INCLUDE_LINE" >>"$NFT_CONF"
     if "$NFT" -c -f "$NFT_CONF" >/dev/null 2>&1; then
-      say "nftables.service is enabled: added the include line to ${NFT_CONF}."
+      step "nftables.service is enabled: added the rule to ${NFT_CONF} too."
     else
       drop_include
-      warn "${NFT_CONF} does not pass 'nft -c'; left it unchanged. 'systemctl reload nftables' will drop the rule until the next reboot."
+      warn "${NFT_CONF} does not pass 'nft -c'; left it unchanged. 'systemctl reload nftables' would drop the protection until the next restart."
     fi
   fi
 }
 
+ubuntu_intro() {
+  section "2/2  Ubuntu network protection (${CVE})"
+  step "What it does: blocks a rare kind of network traffic used to attack Ubuntu,"
+  step "until Ubuntu's official fix is installed. Normal use is not affected."
+}
+
 do_apply() {
-  say "2/2 Ubuntu network protection for ${CVE}"
+  info ""
+  RESULT2="${C_BAD}FAILED${C_0} - see the error above"
   kernel_status
   if in_container; then
-    warn "Running inside a container: this only protects the container's own network. Apply it on the host too."
+    warn "This is a container: this only protects the container itself. Run it on the host too."
   fi
   ensure_nft
+  step "Turning on the protection..."
   write_rule_file
   "$NFT" -f "$RULE_FILE"
   persist
-  [ "$(rule_count)" = "1" ] || die "Verification failed: the rule is not loaded as expected. Run with --status."
-  say "Done: incoming IPv4 TCP packets with IP options are now dropped."
-  say "Side effect: TCP connections that need IPv4 options will fail. TCP options and IPv6 are not affected."
-  say "Containers with their own network namespace are not covered: run the script inside them too."
-  say "This only reduces the risk. Install the fixed kernel when it is released ('apt update && apt upgrade'), reboot, then run with --remove."
+  [ "$(rule_count)" = "1" ] || die "Verification failed: the protection is not loaded as expected. Run with --status."
+  if [ "$KEPT_AFTER_RESTART" -eq 1 ]; then
+    RESULT2="${C_OK}ACTIVE${C_0} - stays on after a restart"
+    result "$C_OK" "ACTIVE - the protection is on and stays on after a restart."
+  else
+    RESULT2="${C_WARN}ACTIVE until the next restart${C_0} - run it again after restarting"
+    result "$C_WARN" "ACTIVE until the next restart - run it again after restarting."
+  fi
+  step "When Ubuntu releases the official fix: install the system updates, restart,"
+  step "then run this command again with --remove at the end."
 }
 
 show_status() {
   local active=1
-  say "2/2 Ubuntu network protection for ${CVE}"
+  info ""
   kernel_status
   NFT="$(command -v nft || true)"
   if table_loaded && [ "$(rule_count)" -ge 1 ]; then
     active=0
-    say "Protection: ACTIVE"
-    "$NFT" list table inet "$TABLE" | grep 'hdrlength' | sed 's/^[[:space:]]*/    /'
+    if has_systemd && systemctl is-enabled --quiet "$UNIT" 2>/dev/null; then
+      RESULT2="${C_OK}ACTIVE${C_0} - stays on after a restart"
+      result "$C_OK" "ACTIVE - the protection is on and stays on after a restart."
+    else
+      RESULT2="${C_WARN}ACTIVE until the next restart${C_0}"
+      result "$C_WARN" "ACTIVE until the next restart - run the command without --status to keep it on."
+    fi
   else
-    warn "Protection: NOT active"
+    RESULT2="${C_WARN}NOT ACTIVE${C_0} - run the command without --status to turn it on"
+    result "$C_WARN" "NOT ACTIVE - run the same command without --status to turn it on."
   fi
-  if has_systemd && systemctl is-enabled --quiet "$UNIT" 2>/dev/null; then
-    say "After reboot: kept (${UNIT} enabled)"
-  else
-    warn "After reboot: not kept"
-  fi
-  if include_present; then say "${NFT_CONF}: include line present"; fi
   return "$active"
 }
 
 do_remove() {
+  info ""
+  RESULT2="${C_BAD}FAILED${C_0} - see the error above"
   if [ -f "$UNIT_FILE" ]; then
     if has_systemd; then systemctl disable --now "$UNIT" >/dev/null 2>&1 || true; fi
     rm -f "$UNIT_FILE"
@@ -438,8 +538,13 @@ do_remove() {
   NFT="$(command -v nft || true)"
   if table_loaded; then "$NFT" delete table inet "$TABLE"; fi
   rm -f "$RULE_FILE"
-  say "Removed the ${CVE} protection (rule, ${RULE_FILE}, boot setting)."
   kernel_status
+  RESULT2="REMOVED - the protection is off"
+  result "" "REMOVED - the protection is off."
+  if [ "$KERNEL_FIXED" -ne 0 ]; then
+    warn "The official fix does not seem to be installed yet: this computer is not protected."
+    warn "Run the command again without --remove to turn the protection back on."
+  fi
 }
 
 # ============================================================================
@@ -472,12 +577,28 @@ main() {
     die "On Ubuntu this script must run as root. Use sudo."
   fi
   WORKDIR="$(mktemp -d)" || die "Cannot create a temporary directory (is the filesystem read-only?)."
-  say "device-tools ${VERSION} on ${OS_NAME}"
 
-  if [ "$mode" != "remove" ]; then ext_check; fi
+  info ""
+  info "${C_B}UME device tools ${VERSION}${C_0} on ${OS_NAME}"
+  info "This script does two separate things, each with its own result:"
+  info "  1. Claude Code extension check - looks for traces of a backdoored extension (changes nothing)"
+  info "  2. Ubuntu network protection  - turns on a temporary protection (Ubuntu only)"
+  case "$mode" in
+    status) info "Mode: --status (only checks, changes nothing)" ;;
+    remove) info "Mode: --remove (turns off item 2 only)" ;;
+  esac
+  SUMMARY=1
 
+  if [ "$mode" = "remove" ]; then
+    RESULT1="not run (--remove only turns off item 2)"
+  else
+    ext_check
+  fi
+
+  ubuntu_intro
   if [ "$OS_KIND" != "ubuntu" ]; then
-    say "2/2 Ubuntu network protection for ${CVE}: not needed on this system (Ubuntu only)."
+    RESULT2="NOT NEEDED - this computer does not run Ubuntu"
+    result "" "NOT NEEDED - this computer does not run Ubuntu."
   else
     case "$mode" in
       apply) do_apply ;;
@@ -486,7 +607,7 @@ main() {
     esac
   fi
 
-  found_reminder
+  print_summary
   if [ "$FOUND" -gt 0 ]; then exit 3; fi
   exit "$rc"
 }
