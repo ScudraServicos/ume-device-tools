@@ -1,107 +1,126 @@
-# CVE-2026-98432 mitigation for Ubuntu
+# UME device tools
 
-One script that applies Ubuntu's published mitigation for
-[CVE-2026-98432](https://ubuntu.com/security/CVE-2026-98432): a use-after-free in the
-Linux kernel's IPv4 TCP connection setup that can lead to remote code execution
-(Ubuntu priority **Critical**, CVSS 3.1 9.8).
+One script, `device-tools.sh`, for macOS and Linux computers. It does two things:
 
-> **The real fix is an updated kernel.** This mitigation reduces the risk until the
-> fixed kernel is installed **and running**. It does not fully prevent exploitation.
+| # | Item | Systems | What it does |
+|---|---|---|---|
+| 1 | **Claude Code extension check** | macOS, Linux | Looks for the traces left by the backdoored Claude Code extension (versions 2.1.312 and 2.1.313 from the Cursor extension marketplace). **Read-only:** it reports, it changes nothing. |
+| 2 | **Ubuntu network protection for [CVE-2026-98432](https://ubuntu.com/security/CVE-2026-98432)** | Ubuntu | Applies Ubuntu's published mitigation for a critical Linux kernel flaw (remote code execution). |
 
 ## Run it
 
-Needs `sudo` and Ubuntu 18.04 or later.
+Needs `sudo` (your computer password).
 
 ```bash
-f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/ScudraServicos/cve-2026-98432-mitigation/v2026.11.04/cve-2026-98432-mitigate.sh -o "$f" && sudo bash "$f"
+f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/ScudraServicos/ume-device-tools/v2026.11.05/device-tools.sh -o "$f" && sudo bash "$f"
 ```
 
-Add `--status` (check only, changes nothing; exit 0 = active) or `--remove` (undo) at
+Add `--status` (check only, changes nothing) or `--remove` (undo the Ubuntu protection) at
 the end of the same command:
 
 ```bash
-f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/ScudraServicos/cve-2026-98432-mitigation/v2026.11.04/cve-2026-98432-mitigate.sh -o "$f" && sudo bash "$f" --status
+f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/ScudraServicos/ume-device-tools/v2026.11.05/device-tools.sh -o "$f" && sudo bash "$f" --status
 ```
 
-## What it does
+Without `sudo` (macOS and non-Ubuntu Linux only), the check covers the current user only.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | OK |
+| 1 | Error, or (`--status`) the Ubuntu protection is not active |
+| 2 | Wrong arguments |
+| 3 | Traces of the backdoored extension found: **contact the Security team, delete nothing** |
+
+## 1. Claude Code extension check
+
+Source: [Cursor security notice](https://cursor.com/blog/claude-code-extension-security-notice) and
+[Phorion's analysis](https://phorion.io/blog/offical-claude-code-vsx-compromise/).
+
+On October 29, 2026, modified builds of the Claude Code extension (2.1.312 and 2.1.313) were served
+by the Cursor extension marketplace. When the editor loads them, they add an attacker SSH key, install
+a startup item, open a reverse SSH tunnel and send host details to the attacker. **Updating or
+removing the extension does not remove these traces.**
+
+The check runs for every local account when run with `sudo`. It reports:
+
+| Trace | Where |
+|---|---|
+| Backdoored extension file (contains `134.209.82.225`) | `~/.<editor>/extensions/anthropic.claude-code-*/extension.js` |
+| Attacker SSH key (`svc-telemetry`, `SHA256:0Z6R+DF64Do2nwQic8a7kkfDLNNk4IiK+2U2Rci4htk`) | `~/.ssh/authorized_keys` |
+| Startup script and tunnel key | `~/.config/.smt`, `~/.config/.smtk` |
+| Fake Apple startup item (macOS) | `~/Library/LaunchAgents/com.apple.sysmond.plist` |
+| `@reboot` entry (Linux) | user crontab |
+| Tunnel key in the temporary folder | `/tmp/.stk_*`, `$TMPDIR/.stk_*` |
+| Running tunnel or retry loop | processes mentioning `134.209.82.225`, `.config/.smt` or `.stk_` |
+| Open connection to the attacker server | `134.209.82.225` |
+
+Having version 2.1.312 or 2.1.313 installed is only noted, not counted: the backdoored builds came
+from the Cursor marketplace, and Cursor reports no other distribution as affected, so the file
+content decides. Windows is not covered by this script
+(see the Cursor notice for its check).
+
+**If anything is found, do not delete it.** The Security team handles removal and credential
+rotation, and needs the traces to check whether anyone logged in through the tunnel.
+
+## 2. Ubuntu network protection (CVE-2026-98432)
+
+> **The real fix is an updated kernel.** This protection reduces the risk until the fixed kernel
+> is installed **and running**. It does not fully prevent exploitation.
 
 | Step | Detail |
 |---|---|
-| Checks | Runs only as root and only on Ubuntu. Prints the running kernel and whether its changelog lists the CVE. |
+| Checks | Prints the running kernel and whether its changelog lists the CVE. |
 | Installs | `nftables`, if missing (the only step that needs network access). |
 | Rule | Writes `/etc/cve-2026-98432.nft` and loads table `inet cve_2026_98432`: `ip protocol tcp ip hdrlength > 5 counter drop` on the input hook, priority -310. Own table: existing firewall rules are untouched. Re-running never duplicates the rule. |
 | Reboot | Enables `cve-2026-98432-mitigation.service`, a oneshot unit that reloads the rule at boot. |
 | `/etc/nftables.conf` | Only if `nftables.service` is already enabled: adds `include "/etc/cve-2026-98432.nft"`, so `systemctl reload/restart nftables` keeps the rule. |
 
 `--remove` deletes the table, the rule file, the unit and the include line. It leaves the
-`nftables` package installed.
+`nftables` package installed. Hosts protected with the earlier `cve-2026-98432-mitigate.sh`
+(v2026.11.04) use the same names, so this script manages them too.
 
-## Impact
+**Impact:** blocks incoming IPv4 TCP packets that carry IP options. Normal IPv4 TCP, TCP options,
+IPv6 and existing firewall rules keep working. TCP connections that depend on IPv4 options (rare,
+e.g. CIPSO-labeled networks) break. Containers with their own network namespace need the script
+run inside them too.
 
-- **Blocks:** incoming IPv4 TCP packets that carry IP options.
-- **Keeps working:** normal IPv4 TCP, TCP options (timestamps, window scaling), IPv6, and
-  all existing firewall rules.
-- **Breaks:** TCP connections that depend on IPv4 options (rare, e.g. CIPSO-labeled networks).
-- **Covers:** this host, including connections to itself. Containers with their own network
-  namespace need the script run inside them too.
+**Differences from the advisory steps.** The rule is the advisory's rule, unchanged. Boot
+persistence uses its own systemd unit instead of enabling `nftables.service`, because that service
+runs `flush ruleset` when it starts and would wipe rules managed by UFW, firewalld, Docker or
+Kubernetes. The rule file starts with `table` + `delete table`, so reloading it never adds a second
+copy. On Ubuntu 18.04 the `nftables` package enables `nftables.service` on install, so there the
+include line is added too.
 
-## Differences from the advisory steps
-
-The nftables rule is the advisory's rule, unchanged. How it is installed differs on purpose:
-
-1. **Boot persistence uses its own systemd unit instead of enabling `nftables.service`.**
-   `nftables.service` runs `flush ruleset` when it starts. On hosts whose firewall is managed
-   by UFW, firewalld, Docker or Kubernetes through iptables-nft, that wipes their rules. The
-   advisory assumes no such tools; a one-line command cannot.
-2. **The rule file is idempotent.** It starts with `table` + `delete table`, so loading it
-   again (re-run, boot, nftables reload) replaces the rule instead of adding a second copy.
-
-On Ubuntu 18.04 the `nftables` package enables `nftables.service` when it is installed
-(package default, accept-all config), so there the include line is added too.
-
-## Getting the fix
-
-Check the [advisory](https://ubuntu.com/security/CVE-2026-98432) for the fixed kernel
-version of your release and kernel flavor. When it is published:
-
-```bash
-sudo apt update && sudo apt upgrade && sudo reboot
-```
-
-Then run the script with `--remove`.
-
-- Ubuntu 22.04 and newer: Canonical published the fixes in the `-proposed` pocket first,
-  for users who run their own kernel acceptance tests
-  ([Canonical blog](https://ubuntu.com/blog/fixes-available-in-proposed-pocket-for-cve-2026-98432)).
-  This script does not enable `-proposed`.
-- Ubuntu 20.04 and older: fixes come through Ubuntu Pro (ESM).
-- Disabling MPTCP is **not** a mitigation for this CVE. The bug is not specific to MPTCP.
+**Getting the fix.** Check the [advisory](https://ubuntu.com/security/CVE-2026-98432) for the fixed
+kernel of your release. When it is published: `sudo apt update && sudo apt upgrade && sudo reboot`,
+then run the script with `--remove`. Ubuntu 22.04 and newer got fixes in the `-proposed` pocket
+first ([Canonical blog](https://ubuntu.com/blog/fixes-available-in-proposed-pocket-for-cve-2026-98432));
+this script does not enable `-proposed`. Ubuntu 20.04 and older get fixes through Ubuntu Pro (ESM).
+Disabling MPTCP is **not** a mitigation.
 
 ## Check before you run
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/ScudraServicos/cve-2026-98432-mitigation/v2026.11.04/cve-2026-98432-mitigate.sh
-sha256sum cve-2026-98432-mitigate.sh   # compare with the release notes
-less cve-2026-98432-mitigate.sh         # read it
-sudo bash cve-2026-98432-mitigate.sh
+curl -fsSLO https://raw.githubusercontent.com/ScudraServicos/ume-device-tools/v2026.11.05/device-tools.sh
+shasum -a 256 device-tools.sh   # compare with the release notes (sha256sum on Linux)
+less device-tools.sh            # read it
+sudo bash device-tools.sh
 ```
 
 ## Tests
 
-`tests/ubuntu-e2e.sh [image]` runs the script in Docker. It checks:
-
-- Real TCP connections with and without IP options.
-- That re-running never duplicates the rule.
-- `--status` and `--remove`.
-- That non-root users and non-Ubuntu systems are refused.
-- That the rule survives a reboot under systemd, with and without `nftables.service`.
-
-Passing on `ubuntu:18.04`, `20.04`, `22.04`, `24.04` and `26.04`. Containers share the
-Docker host's kernel, so these tests cover the nftables userspace and systemd of each
-release, not its kernel.
+- `tests/ubuntu-e2e.sh [image]` runs the script in Docker: real TCP connections with and without IP
+  options, re-runs, `--status`, `--remove`, non-root refused on Ubuntu, reboots under systemd, the
+  extension check against planted traces (and that it leaves them untouched), and a non-Ubuntu
+  system (check only). Passing on `ubuntu:18.04`, `20.04`, `22.04`, `24.04` and `26.04`. Containers
+  share the Docker host's kernel, so these tests cover each release's userspace, not its kernel.
+- `tests/macos-check.sh` runs the extension check with the bash 3.2 that ships with macOS, against
+  fake home and temp folders.
 
 ## References
 
+- Cursor notice: <https://cursor.com/blog/claude-code-extension-security-notice>
+- Phorion analysis: <https://phorion.io/blog/offical-claude-code-vsx-compromise/>
 - Ubuntu advisory: <https://ubuntu.com/security/CVE-2026-98432>
 - Canonical blog: <https://ubuntu.com/blog/fixes-available-in-proposed-pocket-for-cve-2026-98432>
-- Upstream fix: <https://git.kernel.org/linus/e3f33b0a1d89d738e2b913dab519226eaf76e15b>
+- Kernel fix: <https://git.kernel.org/linus/e3f33b0a1d89d738e2b913dab519226eaf76e15b>
