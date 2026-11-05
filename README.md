@@ -161,18 +161,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $f
 
 ## Releases
 
-Releases publish themselves when an approved pull request is merged into `main`. The pull request
-must pass every test (`test.yml`) and get an approval from the infrasec team. After the merge,
-`release.yml` runs the tests again and, if the scripts carry a new `VERSION`, creates the tag
-`v<VERSION>`, attaches both scripts and their SHA-256, and marks the release as latest. Nobody
-creates tags by hand. Releases are immutable once published.
+An infrasec member pushes a signed tag `v<VERSION>` on `main` after the pull request is approved
+and merged. The `release` workflow then checks the tag (signature verified by GitHub, commit in
+`main`), runs every test on that commit, checks that `VERSION` in both scripts matches the tag, and
+publishes the release: both scripts and their SHA-256 as files, marked as latest. The workflow never
+creates tags, and releases are immutable once published.
 
-**Steps for maintainers and reviewers (changing a script, raising the version, approving, retrying):
-[RELEASING.md](RELEASING.md).**
+**Steps for maintainers and reviewers (changing a script, raising the version, approving, tagging,
+retrying, fixing a failed release): [RELEASING.md](RELEASING.md).**
 
 ## Tests
 
-`.github/workflows/test.yml` runs all of them on every pull request and again before each release:
+`.github/workflows/test.yml` runs all of them on every pull request and on the tagged commit before each release:
 
 - `tests/ubuntu-e2e.sh [image]` runs the script in Docker: real TCP connections with and without IP
   options, re-runs, `--status`, `--remove`, non-root refused on Ubuntu, reboots under systemd, the

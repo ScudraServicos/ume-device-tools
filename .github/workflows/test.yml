@@ -1,6 +1,6 @@
-# Runs every test on each pull request, and again on the merged commit before
-# each release (release.yml calls this workflow). The last job, "tests", is the
-# check that the main branch rule requires before a pull request can be merged.
+# Runs every test on each pull request, and on the tagged commit before each
+# release (release.yml calls this workflow with that commit). The last job,
+# "tests", sums them up: it must be green before merging and before releasing.
 #
 # On Windows, tests/windows-check.ps1 plants fake traces in the runner's profile
 # and registers a scheduled task, which is why it only runs on these disposable
@@ -10,6 +10,11 @@ name: test
 on:
   pull_request:
   workflow_call:
+    inputs:
+      sha:
+        description: "Commit to test (release.yml passes the tagged commit)"
+        required: false
+        type: string
   workflow_dispatch:
 
 permissions: {}
@@ -22,7 +27,7 @@ jobs:
     permissions: {} # public repository: the code is fetched without a token
     env:
       REPO: ${{ github.repository }}
-      SHA: ${{ github.sha }}
+      SHA: ${{ inputs.sha || github.sha }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
     steps:
       - name: Get the code (no third-party actions)
@@ -52,9 +57,9 @@ jobs:
               if git ls-remote --exit-code --tags "https://github.com/$REPO.git" "refs/tags/v$sh_ver" >/dev/null; then
                 echo "::error::v$sh_ver is already released: pick a newer VERSION. See RELEASING.md."; exit 1
               fi
-              echo "Scripts changed: this pull request will release v$sh_ver when merged."
+              echo "Scripts changed to version $sh_ver: after merging, push the signed tag v$sh_ver on main to release it (RELEASING.md)."
             else
-              echo "Scripts unchanged: merging this pull request publishes no new release."
+              echo "Scripts unchanged: no new version, nothing to tag after merging."
             fi
           fi
 
@@ -84,7 +89,7 @@ jobs:
         shell: pwsh
         env:
           REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
+          SHA: ${{ inputs.sha || github.sha }}
         run: |
           git init --quiet src
           git -C src fetch --quiet --depth 1 "https://github.com/$env:REPO.git" "$env:SHA"
@@ -106,7 +111,7 @@ jobs:
     permissions: {}
     env:
       REPO: ${{ github.repository }}
-      SHA: ${{ github.sha }}
+      SHA: ${{ inputs.sha || github.sha }}
     steps:
       - name: Get the code (no third-party actions)
         run: |
@@ -129,7 +134,7 @@ jobs:
     permissions: {}
     env:
       REPO: ${{ github.repository }}
-      SHA: ${{ github.sha }}
+      SHA: ${{ inputs.sha || github.sha }}
       IMAGE: ${{ matrix.image }}
     steps:
       - name: Get the code (no third-party actions)

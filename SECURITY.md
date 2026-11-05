@@ -15,8 +15,8 @@ reproduce.
 ## Checking what you run
 
 - Use the commands from the README. They download the scripts attached to the latest release,
-  which is published only by the release workflow from `main`, after a pull request approved by
-  the infrasec team and passing every test, and cannot be changed later.
+  which is published only from a tag signed by an infrasec member, on a commit merged into
+  `main` through a reviewed pull request, after every test passed. It cannot be changed later.
 - Each release has the SHA-256 of each script (`device-tools.sh.sha256`,
   `device-tools.ps1.sha256`). Check it before running:
 
