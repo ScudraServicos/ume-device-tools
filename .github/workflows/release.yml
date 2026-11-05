@@ -5,14 +5,14 @@
 name: release
 
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
         description: "Existing signed tag to publish, e.g. v2026.11.05.1"
         required: true
         type: string
+  push:
+    tags: ["v*"]
 
 permissions: {}
 
