@@ -1,34 +1,95 @@
-# Tests device-tools.ps1 on a disposable Windows runner (Windows PowerShell 5.1
-# and PowerShell 7, as administrator) and on Linux (PowerShell 7). On Windows the
-# test plants fake traces in the runner's profile and registers a scheduled
-# task, which is why it only runs here and never on a real computer.
+# Runs every test on each pull request, and on the tagged commit before each
+# release (release.yml calls this workflow with that commit). The last job,
+# "tests", sums them up: it must be green before merging and before releasing.
+#
+# On Windows, tests/windows-check.ps1 plants fake traces in the runner's profile
+# and registers a scheduled task, which is why it only runs on these disposable
+# runners and never on a real computer.
 name: test
 
 on:
   pull_request:
-    paths:
-      - "device-tools.ps1"
-      - "tests/windows-check.ps1"
-      - ".github/workflows/test.yml"
+  workflow_call:
+    inputs:
+      sha:
+        description: "Commit to test (release.yml passes the tagged commit)"
+        required: false
+        type: string
   workflow_dispatch:
 
 permissions: {}
 
 jobs:
+  version:
+    name: version and syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {} # public repository: the code is fetched without a token
+    env:
+      REPO: ${{ github.repository }}
+      SHA: ${{ inputs.sha || github.sha }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - name: Get the code (no third-party actions)
+        run: |
+          set -euo pipefail
+          git init --quiet src
+          git -C src fetch --quiet --depth 1 "https://github.com/$REPO.git" "$SHA"
+          git -C src -c advice.detachedHead=false checkout --quiet FETCH_HEAD
+
+      - name: Both scripts carry the same version, and a new one when they change
+        working-directory: src
+        run: |
+          set -euo pipefail
+          sh_ver="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' device-tools.sh)"
+          ps_ver="$(awk -F"'" '/^\$Version = /{ print $2; exit }' device-tools.ps1)"
+          echo "device-tools.sh VERSION=$sh_ver, device-tools.ps1 \$Version=$ps_ver"
+          [[ "$sh_ver" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$ ]] ||
+            { echo "::error::VERSION must look like YYYY.MM.DD or YYYY.MM.DD.N (found: $sh_ver)"; exit 1; }
+          [ "$sh_ver" = "$ps_ver" ] ||
+            { echo "::error::device-tools.sh VERSION ($sh_ver) and device-tools.ps1 \$Version ($ps_ver) must be equal"; exit 1; }
+          if [ -n "$BASE_SHA" ]; then
+            git fetch --quiet --depth 1 "https://github.com/$REPO.git" "$BASE_SHA"
+            if ! git diff --quiet "$BASE_SHA" HEAD -- device-tools.sh device-tools.ps1; then
+              base_ver="$(git show "$BASE_SHA:device-tools.sh" | sed -n 's/^VERSION="\(.*\)"$/\1/p')"
+              [ "$sh_ver" != "$base_ver" ] ||
+                { echo "::error::The scripts changed, so raise VERSION in both (main has $base_ver). See RELEASING.md."; exit 1; }
+              if git ls-remote --exit-code --tags "https://github.com/$REPO.git" "refs/tags/v$sh_ver" >/dev/null; then
+                echo "::error::v$sh_ver is already released: pick a newer VERSION. See RELEASING.md."; exit 1
+              fi
+              echo "Scripts changed to version $sh_ver: after merging, push the signed tag v$sh_ver on main to release it (RELEASING.md)."
+            else
+              echo "Scripts unchanged: no new version, nothing to tag after merging."
+            fi
+          fi
+
+      - name: Syntax
+        working-directory: src
+        run: |
+          set -euo pipefail
+          bash -n device-tools.sh
+          # Windows PowerShell 5.1 misreads non-ASCII text in files without a byte order mark.
+          if LC_ALL=C grep -n '[^[:print:][:space:]]' device-tools.ps1; then
+            echo "::error::device-tools.ps1 must be ASCII only"; exit 1
+          fi
+          # shellcheck disable=SC2016  # PowerShell variables, expanded by pwsh, not bash
+          pwsh -NoProfile -Command '$e = $null; $null = [System.Management.Automation.Language.Parser]::ParseFile("$PWD/device-tools.ps1", [ref]$null, [ref]$e); if ($e) { $e | Out-String | Write-Host; exit 1 }'
+
   windows-check:
+    name: windows check (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
-    permissions: {} # public repository: the code is fetched without a token
+    permissions: {}
     steps:
       - name: Get the code (no third-party actions)
         shell: pwsh
         env:
           REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
+          SHA: ${{ inputs.sha || github.sha }}
         run: |
           git init --quiet src
           git -C src fetch --quiet --depth 1 "https://github.com/$env:REPO.git" "$env:SHA"
@@ -42,3 +103,62 @@ jobs:
           if ($IsWindows) { $PSVersionTable.PSVersion.ToString(); powershell -NoProfile -Command '$PSVersionTable.PSVersion.ToString()' }
           pwsh -NoProfile -File src/tests/windows-check.ps1
           exit $LASTEXITCODE
+
+  macos-check:
+    name: macos check
+    runs-on: macos-latest
+    timeout-minutes: 10
+    permissions: {}
+    env:
+      REPO: ${{ github.repository }}
+      SHA: ${{ inputs.sha || github.sha }}
+    steps:
+      - name: Get the code (no third-party actions)
+        run: |
+          set -euo pipefail
+          git init --quiet src
+          git -C src fetch --quiet --depth 1 "https://github.com/$REPO.git" "$SHA"
+          git -C src -c advice.detachedHead=false checkout --quiet FETCH_HEAD
+
+      - name: Run tests/macos-check.sh (bash 3.2 that ships with macOS)
+        run: bash src/tests/macos-check.sh
+
+  ubuntu-e2e:
+    name: ubuntu e2e (${{ matrix.image }})
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:18.04", "ubuntu:20.04", "ubuntu:22.04", "ubuntu:24.04", "ubuntu:26.04"]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions: {}
+    env:
+      REPO: ${{ github.repository }}
+      SHA: ${{ inputs.sha || github.sha }}
+      IMAGE: ${{ matrix.image }}
+    steps:
+      - name: Get the code (no third-party actions)
+        run: |
+          set -euo pipefail
+          git init --quiet src
+          git -C src fetch --quiet --depth 1 "https://github.com/$REPO.git" "$SHA"
+          git -C src -c advice.detachedHead=false checkout --quiet FETCH_HEAD
+
+      - name: Run tests/ubuntu-e2e.sh in Docker
+        run: bash src/tests/ubuntu-e2e.sh "$IMAGE"
+
+  tests:
+    name: tests
+    if: always()
+    needs: [version, windows-check, macos-check, ubuntu-e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Every test passed
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "$RESULTS"
+          echo "$RESULTS" | jq -e 'all(.[]; . == "success")' >/dev/null ||
+            { echo "::error::a test failed or did not run: see the jobs above"; exit 1; }
