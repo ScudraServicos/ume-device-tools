@@ -12,9 +12,10 @@ the output of `--status`, and the steps to reproduce.
 
 ## Checking what you run
 
-- Use the pinned command from the README. It points at a release tag, not a branch.
-- Each release lists the SHA-256 of the script. Compare it before running:
+- Use the command from the README. It downloads the script attached to the latest release,
+  which is published only from a tag signed by the infrasec team and cannot be changed later.
+- Each release has the script's SHA-256 as `device-tools.sh.sha256`. Check it before running:
 
   ```bash
-  shasum -a 256 device-tools.sh   # sha256sum on Linux
+  shasum -a 256 -c device-tools.sh.sha256   # sha256sum -c on Linux
   ```
