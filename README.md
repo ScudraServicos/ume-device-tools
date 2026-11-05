@@ -12,17 +12,31 @@ One script, `device-tools.sh`, for macOS and Linux computers. It does two things
 Needs `sudo` (your computer password).
 
 ```bash
-f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/ScudraServicos/ume-device-tools/v2026.11.05/device-tools.sh -o "$f" && sudo bash "$f"
+f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/ScudraServicos/ume-device-tools/v2026.11.05.1/device-tools.sh -o "$f" && sudo bash "$f"
 ```
 
 Add `--status` (check only, changes nothing) or `--remove` (undo the Ubuntu protection) at
 the end of the same command:
 
 ```bash
-f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/ScudraServicos/ume-device-tools/v2026.11.05/device-tools.sh -o "$f" && sudo bash "$f" --status
+f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/ScudraServicos/ume-device-tools/v2026.11.05.1/device-tools.sh -o "$f" && sudo bash "$f" --status
 ```
 
 Without `sudo` (macOS and non-Ubuntu Linux only), the check covers the current user only.
+
+## Reading the result
+
+The two items run in separate sections, each ending with its own `Result:` line, and a
+`SUMMARY` at the end repeats both:
+
+| Item | Result | What to do |
+|---|---|---|
+| 1. Claude Code extension check | `OK` | Nothing. No traces found. |
+| | `ATTENTION` | **Do not delete anything. Contact the Security team now.** |
+| 2. Ubuntu network protection | `ACTIVE` | Nothing. When Ubuntu releases the fix: update, restart, run again with `--remove`. |
+| | `NOT ACTIVE` (`--status`) | Run the command without `--status` to turn it on. |
+| | `NOT NEEDED` | Nothing. The computer does not run Ubuntu. |
+| | `REMOVED` (`--remove`) | Nothing, if the official fix is installed. |
 
 | Exit code | Meaning |
 |---|---|
@@ -101,7 +115,7 @@ Disabling MPTCP is **not** a mitigation.
 ## Check before you run
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/ScudraServicos/ume-device-tools/v2026.11.05/device-tools.sh
+curl -fsSLO https://raw.githubusercontent.com/ScudraServicos/ume-device-tools/v2026.11.05.1/device-tools.sh
 shasum -a 256 device-tools.sh   # compare with the release notes (sha256sum on Linux)
 less device-tools.sh            # read it
 sudo bash device-tools.sh
